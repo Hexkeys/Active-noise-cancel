@@ -1,104 +1,119 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Web ANC Proof of Concept</title>
-    <style>
-        body {
-            font-family: Arial, sans-serif;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            height: 100vh;
-            background-color: #121212;
-            color: #ffffff;
-            margin: 0;
-        }
-        button {
-            padding: 15px 30px;
-            font-size: 18px;
-            font-weight: bold;
-            cursor: pointer;
-            border: none;
-            border-radius: 25px;
-            background-color: #00adb5;
-            color: white;
-            transition: background 0.2s;
-        }
-        button:hover { background-color: #007a80; }
-        button.active { background-color: #ff4757; }
-        p { max-width: 400px; text-align: center; color: #888; line-height: 1.5; }
-    </style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="A browser microphone-processing demo with echo feedback prevention.">
+  <title>Web Audio Noise Control</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: system-ui, Arial, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 24px;
+      background: #121212;
+      color: #fff;
+      margin: 0;
+    }
+    main { width: min(560px, 100%); text-align: center; }
+    button {
+      padding: 14px 24px;
+      font-size: 16px;
+      font-weight: 700;
+      cursor: pointer;
+      border: none;
+      border-radius: 14px;
+      background: #00adb5;
+      color: white;
+    }
+    button:hover { background: #007a80; }
+    button:disabled { opacity: .6; cursor: wait; }
+    button.active { background: #ff4757; }
+    p { line-height: 1.6; color: #c3c3c3; }
+    #status { color: #fff; }
+    .note { padding: 12px 16px; border: 1px solid #444; border-radius: 12px; text-align: left; }
+  </style>
 </head>
 <body>
+  <main>
+    <h1>Web Audio Noise Control</h1>
+    <p>This demo enables your browser's built-in microphone echo cancellation and noise suppression.</p>
+    <p class="note"><strong>Feedback prevention:</strong> Microphone audio is not routed to your speakers. This avoids the app repeating speaker sound back into itself.</p>
+    <button id="ancBtn" type="button">Enable Microphone Processing</button>
+    <p id="status" role="status" aria-live="polite">Status: Stopped</p>
+  </main>
 
-    <h1>Web-Based ANC Concept</h1>
-    <p>⚠️ <strong>Important:</strong> Wear tightly sealed headphones before starting to prevent extreme audio feedback loops!</p>
-    <button id="ancBtn">Turn ANC ON</button>
-    <p id="status">Status: Stopped</p>
+  <script>
+    let stream = null;
+    let isRunning = false;
 
-    <script>
-        let audioCtx = null;
-        let stream = null;
-        let isCtxActive = false;
+    const btn = document.getElementById('ancBtn');
+    const statusText = document.getElementById('status');
 
-        const btn = document.getElementById('ancBtn');
-        const statusText = document.getElementById('status');
+    async function stopProcessing() {
+      if (stream) {
+        stream.getTracks().forEach((track) => track.stop());
+        stream = null;
+      }
+      isRunning = false;
+      btn.textContent = 'Enable Microphone Processing';
+      btn.classList.remove('active');
+      statusText.textContent = 'Status: Stopped';
+    }
 
-        btn.addEventListener('click', async () => {
-            if (!isCtxActive) {
-                try {
-                    // 1. Request microphone access
-                    stream = await navigator.mediaDevices.getUserMedia({ 
-                        audio: { 
-                            echoCancellation: false, // Turn off browser's native processing
-                            noiseSuppression: false,
-                            autoGainControl: false,
-                            latency: 0 // Request lowest possible latency
-                        } 
-                    });
+    btn.addEventListener('click', async () => {
+      if (isRunning) {
+        await stopProcessing();
+        return;
+      }
 
-                    // 2. Initialize Web Audio Context
-                    audioCtx = new (window.AudioContext || window.webkitAudioContext)({
-                        latencyHint: 'interactive' // Forces the browser to optimize for low latency
-                    });
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        statusText.textContent = 'Microphone capture is unavailable. Use a supported browser over HTTPS or localhost.';
+        return;
+      }
 
-                    // 3. Create audio nodes
-                    const source = audioCtx.createMediaStreamSource(stream);
-                    const inverter = audioCtx.createGain();
-
-                    // 4. Invert the phase (-1 multiplies the wave amplitude by negative one)
-                    inverter.gain.value = -1;
-
-                    // 5. Connect the pipeline: Mic -> Inverter -> Speakers
-                    source.connect(inverter);
-                    inverter.connect(audioCtx.destination);
-
-                    btn.textContent = "Turn ANC OFF";
-                    btn.classList.add('active');
-                    statusText.textContent = "Status: Running (Phase Inverted)";
-                    isCtxActive = true;
-
-                } catch (err) {
-                    console.error("Error accessing microphone:", err);
-                    alert("Microphone access denied or unsupported.");
-                }
-            } else {
-                // Stop the audio graphs
-                if (stream) {
-                    stream.getTracks().forEach(track => track.stop());
-                }
-                if (audioCtx) {
-                    audioCtx.close();
-                }
-                btn.textContent = "Turn ANC ON";
-                btn.classList.remove('active');
-                statusText.textContent = "Status: Stopped";
-                isCtxActive = false;
-            }
+      btn.disabled = true;
+      statusText.textContent = 'Requesting microphone permission…';
+      try {
+        // Let the browser apply its acoustic echo cancellation and noise reduction.
+        // Crucially, do not connect the microphone stream to audioCtx.destination:
+        // that creates a speaker-to-microphone feedback loop.
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true
+          },
+          video: false
         });
-    </script>
+
+        const track = stream.getAudioTracks()[0];
+        const settings = track && track.getSettings ? track.getSettings() : {};
+        isRunning = true;
+        btn.textContent = 'Stop Microphone Processing';
+        btn.classList.add('active');
+        const echoStatus = settings.echoCancellation === false
+          ? 'Browser echo cancellation could not be enabled.'
+          : 'Browser echo cancellation requested.';
+        statusText.textContent = 'Status: Microphone active. ' + echoStatus + ' No microphone audio is played through speakers.';
+      } catch (err) {
+        console.error('Could not start microphone processing:', err);
+        statusText.textContent = err && err.name === 'NotAllowedError'
+          ? 'Microphone permission was denied. Allow microphone access in your browser to continue.'
+          : 'Could not start microphone processing. Check your microphone and browser permissions.';
+        await stopProcessing();
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    window.addEventListener('pagehide', () => {
+      if (stream) stream.getTracks().forEach((track) => track.stop());
+    });
+  </script>
 </body>
 </html>
