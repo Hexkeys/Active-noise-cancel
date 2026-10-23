@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Web ANC Proof of Concept</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            background-color: #121212;
+            color: #ffffff;
+            margin: 0;
+        }
+        button {
+            padding: 15px 30px;
+            font-size: 18px;
+            font-weight: bold;
+            cursor: pointer;
+            border: none;
+            border-radius: 25px;
+            background-color: #00adb5;
+            color: white;
+            transition: background 0.2s;
+        }
+        button:hover { background-color: #007a80; }
+        button.active { background-color: #ff4757; }
+        p { max-width: 400px; text-align: center; color: #888; line-height: 1.5; }
+    </style>
+</head>
+<body>
+
+    <h1>Web-Based ANC Concept</h1>
+    <p>⚠️ <strong>Important:</strong> Wear tightly sealed headphones before starting to prevent extreme audio feedback loops!</p>
+    <button id="ancBtn">Turn ANC ON</button>
+    <p id="status">Status: Stopped</p>
+
+    <script>
+        let audioCtx = null;
+        let stream = null;
+        let isCtxActive = false;
+
+        const btn = document.getElementById('ancBtn');
+        const statusText = document.getElementById('status');
+
+        btn.addEventListener('click', async () => {
+            if (!isCtxActive) {
+                try {
+                    // 1. Request microphone access
+                    stream = await navigator.mediaDevices.getUserMedia({ 
+                        audio: { 
+                            echoCancellation: false, // Turn off browser's native processing
+                            noiseSuppression: false,
+                            autoGainControl: false,
+                            latency: 0 // Request lowest possible latency
+                        } 
+                    });
+
+                    // 2. Initialize Web Audio Context
+                    audioCtx = new (window.AudioContext || window.webkitAudioContext)({
+                        latencyHint: 'interactive' // Forces the browser to optimize for low latency
+                    });
+
+                    // 3. Create audio nodes
+                    const source = audioCtx.createMediaStreamSource(stream);
+                    const inverter = audioCtx.createGain();
+
+                    // 4. Invert the phase (-1 multiplies the wave amplitude by negative one)
+                    inverter.gain.value = -1;
+
+                    // 5. Connect the pipeline: Mic -> Inverter -> Speakers
+                    source.connect(inverter);
+                    inverter.connect(audioCtx.destination);
+
+                    btn.textContent = "Turn ANC OFF";
+                    btn.classList.add('active');
+                    statusText.textContent = "Status: Running (Phase Inverted)";
+                    isCtxActive = true;
+
+                } catch (err) {
+                    console.error("Error accessing microphone:", err);
+                    alert("Microphone access denied or unsupported.");
+                }
+            } else {
+                // Stop the audio graphs
+                if (stream) {
+                    stream.getTracks().forEach(track => track.stop());
+                }
+                if (audioCtx) {
+                    audioCtx.close();
+                }
+                btn.textContent = "Turn ANC ON";
+                btn.classList.remove('active');
+                statusText.textContent = "Status: Stopped";
+                isCtxActive = false;
+            }
+        });
+    </script>
+</body>
+</html>
