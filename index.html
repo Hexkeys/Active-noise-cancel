@@ -1,119 +1,263 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="A browser microphone-processing demo with echo feedback prevention.">
-  <title>Web Audio Noise Control</title>
-  <style>
-    * { box-sizing: border-box; }
-    body {
-      font-family: system-ui, Arial, sans-serif;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      min-height: 100vh;
-      padding: 24px;
-      background: #121212;
-      color: #fff;
-      margin: 0;
-    }
-    main { width: min(560px, 100%); text-align: center; }
-    button {
-      padding: 14px 24px;
-      font-size: 16px;
-      font-weight: 700;
-      cursor: pointer;
-      border: none;
-      border-radius: 14px;
-      background: #00adb5;
-      color: white;
-    }
-    button:hover { background: #007a80; }
-    button:disabled { opacity: .6; cursor: wait; }
-    button.active { background: #ff4757; }
-    p { line-height: 1.6; color: #c3c3c3; }
-    #status { color: #fff; }
-    .note { padding: 12px 16px; border: 1px solid #444; border-radius: 12px; text-align: left; }
-  </style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Web ANC with Real-Time Visualization</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            background-color: #121212;
+            color: #ffffff;
+            margin: 0;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+        button {
+            padding: 15px 30px;
+            font-size: 18px;
+            font-weight: bold;
+            cursor: pointer;
+            border: none;
+            border-radius: 25px;
+            background-color: #00adb5;
+            color: white;
+            transition: background 0.2s, transform 0.1s;
+            margin-bottom: 10px;
+        }
+        button:hover {
+            background-color: #007a80;
+        }
+        button:active {
+            transform: scale(0.98);
+        }
+        button.active {
+            background-color: #ff4757;
+        }
+        p {
+            max-width: 500px;
+            text-align: center;
+            color: #aaa;
+            line-height: 1.5;
+        }
+        .warning {
+            color: #ffb300;
+            background: #222;
+            padding: 10px 20px;
+            border-radius: 8px;
+            border-left: 4px solid #ffb300;
+        }
+        canvas {
+            background-color: #1e1e1e;
+            border: 2px solid #333;
+            border-radius: 8px;
+            margin-top: 20px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+        }
+        .legend {
+            display: flex;
+            gap: 20px;
+            margin-top: 10px;
+            font-size: 14px;
+        }
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .color-box {
+            width: 16px;
+            height: 16px;
+            border-radius: 4px;
+        }
+    </style>
 </head>
 <body>
-  <main>
-    <h1>Web Audio Noise Control</h1>
-    <p>This demo enables your browser's built-in microphone echo cancellation and noise suppression.</p>
-    <p class="note"><strong>Feedback prevention:</strong> Microphone audio is not routed to your speakers. This avoids the app repeating speaker sound back into itself.</p>
-    <button id="ancBtn" type="button">Enable Microphone Processing</button>
-    <p id="status" role="status" aria-live="polite">Status: Stopped</p>
-  </main>
 
-  <script>
-    let stream = null;
-    let isRunning = false;
+    <h1>Web-Based ANC & Phase Visualizer</h1>
+    <p class="warning">⚠️ <strong>Crucial:</strong> Put on tightly sealed headphones before starting. If using speakers, your microphone will pick up its own output and create intense feedback screeching!</p>
+    
+    <button id="ancBtn">Turn ANC ON</button>
+    <p id="status">Status: Stopped</p>
 
-    const btn = document.getElementById('ancBtn');
-    const statusText = document.getElementById('status');
+    <!-- Canvas for rendering the waveforms -->
+    <canvas id="visualizer" width="600" height="250"></canvas>
 
-    async function stopProcessing() {
-      if (stream) {
-        stream.getTracks().forEach((track) => track.stop());
-        stream = null;
-      }
-      isRunning = false;
-      btn.textContent = 'Enable Microphone Processing';
-      btn.classList.remove('active');
-      statusText.textContent = 'Status: Stopped';
-    }
+    <!-- Legend to explain the lines -->
+    <div class="legend">
+        <div class="legend-item">
+            <div class="color-box" style="background-color: #00adb5;"></div>
+            <span>Original Sound (Mic Input)</span>
+        </div>
+        <div class="legend-item">
+            <div class="color-box" style="background-color: #ff4757;"></div>
+            <span>Anti-Noise (Inverted Phase)</span>
+        </div>
+    </div>
 
-    btn.addEventListener('click', async () => {
-      if (isRunning) {
-        await stopProcessing();
-        return;
-      }
+    <script>
+        let audioCtx = null;
+        let stream = null;
+        let analyser = null;
+        let isCtxActive = false;
+        let animationId = null;
 
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        statusText.textContent = 'Microphone capture is unavailable. Use a supported browser over HTTPS or localhost.';
-        return;
-      }
+        const btn = document.getElementById('ancBtn');
+        const statusText = document.getElementById('status');
+        const canvas = document.getElementById('visualizer');
+        const canvasCtx = canvas.getContext('2d');
 
-      btn.disabled = true;
-      statusText.textContent = 'Requesting microphone permission…';
-      try {
-        // Let the browser apply its acoustic echo cancellation and noise reduction.
-        // Crucially, do not connect the microphone stream to audioCtx.destination:
-        // that creates a speaker-to-microphone feedback loop.
-        stream = await navigator.mediaDevices.getUserMedia({
-          audio: {
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true
-          },
-          video: false
+        // Draw an initial flat line on the canvas
+        function drawStaticLine() {
+            canvasCtx.fillStyle = '#1e1e1e';
+            canvasCtx.fillRect(0, 0, canvas.width, canvas.height);
+            canvasCtx.lineWidth = 2;
+            canvasCtx.strokeStyle = '#333';
+            canvasCtx.beginPath();
+            canvasCtx.moveTo(0, canvas.height / 2);
+            canvasCtx.lineTo(canvas.width, canvas.height / 2);
+            canvasCtx.stroke();
+        }
+        drawStaticLine();
+
+        btn.addEventListener('click', async () => {
+            if (!isCtxActive) {
+                try {
+                    // 1. Request microphone access without native cleanup
+                    stream = await navigator.mediaDevices.getUserMedia({
+                        audio: {
+                            echoCancellation: false,
+                            noiseSuppression: false,
+                            autoGainControl: false,
+                            latency: 0
+                        }
+                    });
+
+                    // 2. Initialize low-latency Web Audio Context
+                    audioCtx = new (window.AudioContext || window.webkitAudioContext)({
+                        latencyHint: 'interactive'
+                    });
+
+                    // 3. Setup Audio Nodes
+                    const source = audioCtx.createMediaStreamSource(stream);
+                    const inverter = audioCtx.createGain();
+                    analyser = audioCtx.createAnalyser();
+
+                    // 4. Configure nodes
+                    inverter.gain.value = -1; // Invert phase
+                    analyser.fftSize = 2048;  // Size of the data window for drawing smooth curves
+
+                    // 5. Connect the pipeline
+                    // Route mic through the analyzer first so we see the original wave shape
+                    source.connect(analyser); 
+                    analyser.connect(inverter);
+                    inverter.connect(audioCtx.destination);
+
+                    // Update UI state
+                    btn.textContent = "Turn ANC OFF";
+                    btn.classList.add('active');
+                    statusText.textContent = "Status: Running (Visualizing Phase)";
+                    isCtxActive = true;
+
+                    // Start the visual loops
+                    visualize();
+
+                } catch (err) {
+                    console.error("Error accessing microphone:", err);
+                    alert("Microphone access denied or unsupported.");
+                }
+            } else {
+                // Clean up and stop audio graph
+                if (stream) stream.getTracks().forEach(track => track.stop());
+                if (audioCtx) audioCtx.close();
+                cancelAnimationFrame(animationId);
+                
+                // Reset UI state
+                btn.textContent = "Turn ANC ON";
+                btn.classList.remove('active');
+                statusText.textContent = "Status: Stopped";
+                isCtxActive = false;
+                drawStaticLine();
+            }
         });
 
-        const track = stream.getAudioTracks()[0];
-        const settings = track && track.getSettings ? track.getSettings() : {};
-        isRunning = true;
-        btn.textContent = 'Stop Microphone Processing';
-        btn.classList.add('active');
-        const echoStatus = settings.echoCancellation === false
-          ? 'Browser echo cancellation could not be enabled.'
-          : 'Browser echo cancellation requested.';
-        statusText.textContent = 'Status: Microphone active. ' + echoStatus + ' No microphone audio is played through speakers.';
-      } catch (err) {
-        console.error('Could not start microphone processing:', err);
-        statusText.textContent = err && err.name === 'NotAllowedError'
-          ? 'Microphone permission was denied. Allow microphone access in your browser to continue.'
-          : 'Could not start microphone processing. Check your microphone and browser permissions.';
-        await stopProcessing();
-      } finally {
-        btn.disabled = false;
-      }
-    });
+        function visualize() {
+            const bufferLength = analyser.frequencyBinCount;
+            const dataArray = new Uint8Array(bufferLength);
 
-    window.addEventListener('pagehide', () => {
-      if (stream) stream.getTracks().forEach((track) => track.stop());
-    });
-  </script>
+            function draw() {
+                // Loop this function every time the screen redraws
+                animationId = requestAnimationFrame(draw);
+
+                // Fetch the current time-domain (waveform) data
+                analyser.getByteTimeDomainData(dataArray);
+
+                // Clear the canvas canvas context background
+                canvasCtx.fillStyle = '#1e1e1e';
+                canvasCtx.fillRect(0, 0, canvas.width, canvas.height);
+
+                // Draw a center reference line
+                canvasCtx.lineWidth = 1;
+                canvasCtx.strokeStyle = '#2a2a2a';
+                canvasCtx.beginPath();
+                canvasCtx.moveTo(0, canvas.height / 2);
+                canvasCtx.lineTo(canvas.width, canvas.height / 2);
+                canvasCtx.stroke();
+
+                const sliceWidth = canvas.width / bufferLength;
+
+                // --- PATH 1: Draw Original Sound Wave (Teal) ---
+                canvasCtx.lineWidth = 2.5;
+                canvasCtx.strokeStyle = '#00adb5';
+                canvasCtx.beginPath();
+
+                let x = 0;
+                for (let i = 0; i < bufferLength; i++) {
+                    const v = dataArray[i] / 128.0; // Normalizes value between 0.0 and 2.0
+                    const y = v * canvas.height / 2;
+
+                    if (i === 0) {
+                        canvasCtx.moveTo(x, y);
+                    } else {
+                        canvasCtx.lineTo(x, y);
+                    }
+                    x += sliceWidth;
+                }
+                canvasCtx.stroke();
+
+
+                // --- PATH 2: Draw Inverted Sound Wave (Red) ---
+                canvasCtx.lineWidth = 2.5;
+                canvasCtx.strokeStyle = '#ff4757';
+                canvasCtx.beginPath();
+
+                x = 0;
+                const midPoint = canvas.height / 2;
+                for (let i = 0; i < bufferLength; i++) {
+                    const v = dataArray[i] / 128.0; 
+                    const originalY = v * midPoint;
+                    
+                    // The magic happens here: subtract the distance from the midpoint 
+                    // to flip it upside down mathematically on the canvas grid
+                    const invertedY = midPoint - (originalY - midPoint);
+
+                    if (i === 0) {
+                        canvasCtx.moveTo(x, invertedY);
+                    } else {
+                        canvasCtx.lineTo(x, invertedY);
+                    }
+                    x += sliceWidth;
+                }
+                canvasCtx.stroke();
+            }
+
+            draw();
+        }
+    </script>
 </body>
 </html>
